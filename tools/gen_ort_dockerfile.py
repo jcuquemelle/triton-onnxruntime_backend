@@ -117,6 +117,49 @@ def parse_cuda_arch_list(raw):
     return ";".join(result)
 
 
+def _arch_num(entry):
+    """Extract the numeric architecture value from an entry like
+    '75-real', '100f', or '86'."""
+    return int(re.sub(r"[^0-9]", "", entry))
+
+
+def filter_cuda_archs_by_min_capability(cuda_archs_str, min_capability):
+    """Filter a semicolon-separated cuda_archs string, keeping only
+    architectures relevant for GPUs at min_capability and above.
+
+    Because SASS is forward-compatible within the same major version,
+    we keep the highest entry whose arch is <= min_capability (it
+    provides compatible code for the target GPU) plus every entry
+    above it.
+
+    Example: min_capability="8.9", list="75-real;80-real;86-real;90-real;100f"
+    -> keeps "86-real;90-real;100f" (86 is the closest <= 89).
+    """
+    if not min_capability:
+        return cuda_archs_str
+    min_arch = int(min_capability.replace(".", ""))
+    entries = [e for e in cuda_archs_str.split(";") if e.strip()]
+
+    # Find the highest entry <= min_arch (provides forward-compat SASS)
+    best_below = None
+    for entry in entries:
+        if _arch_num(entry) <= min_arch:
+            best_below = entry
+
+    filtered = []
+    for entry in entries:
+        if _arch_num(entry) >= min_arch or entry == best_below:
+            filtered.append(entry)
+
+    if not filtered:
+        print(f"[WARNING] All CUDA architectures filtered out by --min-compute-capability={min_capability}")
+        return cuda_archs_str
+    # Preserve the convention: last entry without -real suffix
+    if filtered[-1].endswith("-real"):
+        filtered[-1] = filtered[-1][: -len("-real")]
+    return ";".join(filtered)
+
+
 def target_platform():
     if FLAGS.target_platform is not None:
         return FLAGS.target_platform
@@ -378,6 +421,15 @@ RUN git clone -b rel-${ONNXRUNTIME_VERSION} --recursive ${ONNXRUNTIME_REPO} onnx
     else:
         cuda_archs = "75-real;80-real;86-real;90-real;100f;110f;120f"
 
+    if FLAGS.min_compute_capability is not None:
+        cuda_archs = filter_cuda_archs_by_min_capability(
+            cuda_archs, FLAGS.min_compute_capability
+        )
+        print(
+            f"[INFO] After --min-compute-capability={FLAGS.min_compute_capability} "
+            f"filter: {cuda_archs}"
+        )
+
     df += """
 WORKDIR /workspace/onnxruntime
 ARG PARALLEL_JOBS
@@ -574,6 +626,13 @@ if __name__ == "__main__":
         type=str,
         default=os.environ.get("TRT_VERSION", ""),
         help="TRT version.",
+    )
+    parser.add_argument(
+        "--min-compute-capability",
+        type=str,
+        default=None,
+        help="Minimum CUDA compute capability (e.g. 7.5). "
+        "Architectures below this value are excluded from the ORT build.",
     )
 
     FLAGS = parser.parse_args()

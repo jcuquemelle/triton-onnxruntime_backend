@@ -104,6 +104,7 @@ set(TRITON_ONNXRUNTIME_INCLUDE_PATHS "" CACHE PATH "Paths to ONNXRuntime include
 set(TRITON_ONNX_TENSORRT_REPO_TAG "" CACHE STRING "Tag for onnx-tensorrt repo")
 set(TRT_VERSION "" CACHE STRING "TRT version for this build.")
 set(TRITON_BUILD_PARALLEL "" CACHE STRING "CPU limit for ORT docker build (passed as --cpus to docker build)")
+set(TRITON_MIN_COMPUTE_CAPABILITY "" CACHE STRING "Minimum CUDA compute capability (e.g. 7.5)")
 set(TRITON_ONNXRUNTIME_LIB_PATHS "" CACHE PATH "Paths to ONNXRuntime libraries")
 
 set(TRITON_REPO_ORGANIZATION "https://github.com/triton-inference-server" CACHE STRING "Git repository to pull from")
@@ -346,6 +347,9 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
   if(${TRITON_ENABLE_ONNXRUNTIME_OPENVINO})
     set(_GEN_FLAGS ${_GEN_FLAGS} "--ort-openvino=${TRITON_BUILD_ONNXRUNTIME_OPENVINO_VERSION}")
   endif() # TRITON_ENABLE_ONNXRUNTIME_OPENVINO
+  if(NOT "${TRITON_MIN_COMPUTE_CAPABILITY}" STREQUAL "")
+    set(_GEN_FLAGS ${_GEN_FLAGS} "--min-compute-capability=${TRITON_MIN_COMPUTE_CAPABILITY}")
+  endif() # TRITON_MIN_COMPUTE_CAPABILITY
 
   set(ENABLE_GPU_EXTRA_ARGS "")
   if(${TRITON_ENABLE_GPU})
