@@ -381,18 +381,33 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
       COMMENT "Building ONNX Runtime"
     )
   else()
-    add_custom_command(
-      OUTPUT
-        onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
-      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py  --ort-build-config="${CMAKE_BUILD_TYPE}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" --trt-version="${TRT_VERSION}" --onnx-tensorrt-tag="${TRITON_ONNX_TENSORRT_REPO_TAG}" ${_GEN_FLAGS} --output=Dockerfile.ort ${ENABLE_GPU_EXTRA_ARGS}
-      COMMAND docker build ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${CMAKE_CURRENT_SOURCE_DIR}
-      COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
-      COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
-      COMMAND rm -fr onnxruntime
-      COMMAND docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
-      COMMAND docker rm onnxruntime_backend_ort
-      COMMENT "Building ONNX Runtime"
-    )
+    option(TRITON_ORT_SKIP_DOCKER_BUILD
+      "Reuse the existing local '${TRITON_ONNXRUNTIME_DOCKER_IMAGE}' Docker image instead of rebuilding it (set via build.py --reuse-docker-image onnxruntime)" OFF)
+    if(TRITON_ORT_SKIP_DOCKER_BUILD)
+      add_custom_command(
+        OUTPUT
+          onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
+        COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
+        COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+        COMMAND rm -fr onnxruntime
+        COMMAND docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
+        COMMAND docker rm onnxruntime_backend_ort
+        COMMENT "Reusing existing ORT Docker image '${TRITON_ONNXRUNTIME_DOCKER_IMAGE}'"
+      )
+    else()
+      add_custom_command(
+        OUTPUT
+          onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py  --ort-build-config="${CMAKE_BUILD_TYPE}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" --trt-version="${TRT_VERSION}" --onnx-tensorrt-tag="${TRITON_ONNX_TENSORRT_REPO_TAG}" ${_GEN_FLAGS} --output=Dockerfile.ort ${ENABLE_GPU_EXTRA_ARGS}
+        COMMAND docker build --load ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
+        COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+        COMMAND rm -fr onnxruntime
+        COMMAND docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
+        COMMAND docker rm onnxruntime_backend_ort
+        COMMENT "Building ONNX Runtime"
+      )
+    endif() # TRITON_ORT_SKIP_DOCKER_BUILD
   endif() # WIN32
 
   add_custom_target(ort_target DEPENDS onnxruntime/lib/${ONNXRUNTIME_LIBRARY})
