@@ -383,9 +383,42 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
       COMMENT "Building ONNX Runtime"
     )
   else()
+    set(TRITON_ONNXRUNTIME_ARTIFACTS_PATH "" CACHE PATH
+      "Path to a pre-built ORT artifacts directory. When set, all Docker ORT operations \
+are skipped and this directory is symlinked as the onnxruntime/ tree.")
+    set(TRITON_ORT_LOCAL_REPO "" CACHE PATH
+      "Path to a local ORT git clone used as the build source inside Docker \
+(passed as a BuildKit named context).")
+
     option(TRITON_ORT_SKIP_DOCKER_BUILD
       "Reuse the existing local '${TRITON_ONNXRUNTIME_DOCKER_IMAGE}' Docker image instead of rebuilding it (set via build.py --reuse-docker-image onnxruntime)" OFF)
-    if(TRITON_ORT_SKIP_DOCKER_BUILD)
+
+    # Flags forwarded to gen_ort_dockerfile.py / docker build when using a local repo.
+    set(_ORT_LOCAL_REPO_FLAGS "")
+    set(_ORT_BUILD_CONTEXT_EXTRA_ARGS "")
+    if(TRITON_ORT_LOCAL_REPO)
+      set(_ORT_LOCAL_REPO_FLAGS "--ort-local-repo")
+      set(_ORT_BUILD_CONTEXT_EXTRA_ARGS "--build-context" "ort_source=${TRITON_ORT_LOCAL_REPO}")
+    endif()
+
+    if(TRITON_ONNXRUNTIME_ARTIFACTS_PATH)
+      if(NOT EXISTS "${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}")
+        message(FATAL_ERROR
+          "TRITON_ONNXRUNTIME_ARTIFACTS_PATH does not exist: ${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}")
+      endif()
+      if(NOT EXISTS "${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}/lib/${ONNXRUNTIME_LIBRARY}")
+        message(FATAL_ERROR
+          "TRITON_ONNXRUNTIME_ARTIFACTS_PATH does not contain lib/${ONNXRUNTIME_LIBRARY}: "
+          "${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}")
+      endif()
+      add_custom_command(
+        OUTPUT
+          onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
+        COMMAND rm -f onnxruntime
+        COMMAND ln -sfn ${TRITON_ONNXRUNTIME_ARTIFACTS_PATH} onnxruntime
+        COMMENT "Using pre-built ORT artifacts from ${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}"
+      )
+    elseif(TRITON_ORT_SKIP_DOCKER_BUILD)
       add_custom_command(
         OUTPUT
           onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
@@ -400,8 +433,8 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
       add_custom_command(
         OUTPUT
           onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py  --ort-build-config="${CMAKE_BUILD_TYPE}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" --trt-version="${TRT_VERSION}" --onnx-tensorrt-tag="${TRITON_ONNX_TENSORRT_REPO_TAG}" ${_GEN_FLAGS} --output=Dockerfile.ort ${ENABLE_GPU_EXTRA_ARGS}
-        COMMAND docker build --load ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py  --ort-build-config="${CMAKE_BUILD_TYPE}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" --trt-version="${TRT_VERSION}" --onnx-tensorrt-tag="${TRITON_ONNX_TENSORRT_REPO_TAG}" ${_GEN_FLAGS} --output=Dockerfile.ort ${ENABLE_GPU_EXTRA_ARGS} ${_ORT_LOCAL_REPO_FLAGS}
+        COMMAND docker build --load ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${_ORT_BUILD_CONTEXT_EXTRA_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}
         COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
         COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
         COMMAND rm -fr onnxruntime
@@ -409,7 +442,7 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
         COMMAND docker rm onnxruntime_backend_ort
         COMMENT "Building ONNX Runtime"
       )
-    endif() # TRITON_ORT_SKIP_DOCKER_BUILD
+    endif() # TRITON_ONNXRUNTIME_ARTIFACTS_PATH / TRITON_ORT_SKIP_DOCKER_BUILD
   endif() # WIN32
 
   add_custom_target(ort_target DEPENDS onnxruntime/lib/${ONNXRUNTIME_LIBRARY})
@@ -515,9 +548,19 @@ install(
 # prior to running this build and therefore these set of install
 # commands are not needed.
 if(TRITON_ONNXRUNTIME_DOCKER_BUILD OR DEFINED TRITON_ONNXRUNTIME_PACKAGE_URL)
+  # When TRITON_ONNXRUNTIME_ARTIFACTS_PATH is set, onnxruntime/ in the build
+  # dir is a symlink.  CMake's install(DIRECTORY) does not follow top-level
+  # symlinks — it tries to duplicate the symlink itself, which fails when the
+  # destination already exists as a real directory.  Use the resolved path.
+  if(TRITON_ONNXRUNTIME_ARTIFACTS_PATH)
+    set(_ORT_INSTALL_DIR "${TRITON_ONNXRUNTIME_ARTIFACTS_PATH}")
+  else()
+    set(_ORT_INSTALL_DIR "${CMAKE_CURRENT_BINARY_DIR}/onnxruntime")
+  endif()
+
   install(
     DIRECTORY
-      ${CMAKE_CURRENT_BINARY_DIR}/onnxruntime/
+      ${_ORT_INSTALL_DIR}/
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/onnxruntime
     PATTERN *lib EXCLUDE
     PATTERN *bin EXCLUDE
@@ -527,7 +570,7 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD OR DEFINED TRITON_ONNXRUNTIME_PACKAGE_URL)
 
   install(
     DIRECTORY
-      ${CMAKE_CURRENT_BINARY_DIR}/onnxruntime/bin/
+      ${_ORT_INSTALL_DIR}/bin/
     USE_SOURCE_PERMISSIONS
     DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/onnxruntime
   )
@@ -535,14 +578,14 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD OR DEFINED TRITON_ONNXRUNTIME_PACKAGE_URL)
   if (NOT WIN32)
     install(
       DIRECTORY
-        ${CMAKE_CURRENT_BINARY_DIR}/onnxruntime/lib/
+        ${_ORT_INSTALL_DIR}/lib/
       USE_SOURCE_PERMISSIONS
       DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/onnxruntime
     )
 
     install(
       DIRECTORY
-        ${CMAKE_CURRENT_BINARY_DIR}/onnxruntime/test
+        ${_ORT_INSTALL_DIR}/test
       USE_SOURCE_PERMISSIONS
       DESTINATION ${CMAKE_INSTALL_PREFIX}
     )

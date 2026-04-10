@@ -343,7 +343,21 @@ ENV PYTHONPATH=$INTEL_OPENVINO_DIR/python/python3.12:$INTEL_OPENVINO_DIR/python/
     # For ORT versions 1.8.0 and below the behavior will remain same. For ORT version 1.8.1 we will
     # use tensorrt-8.0 branch instead of using rel-1.8.1
     # From ORT 1.9 onwards we will switch back to using rel-* branches
-    if FLAGS.ort_version == "1.8.1":
+    if FLAGS.ort_local_repo:
+        # Use a local ORT clone supplied as a BuildKit named context.
+        # The docker build command must include:
+        #   --build-context ort_source=<path-to-local-ort-clone>
+        # Fixes applied to the local clone as real commits are used as-is;
+        # no ephemeral patch script is needed.
+        df += """
+#
+# ONNX Runtime build (from local repository via BuildKit named context)
+#
+ARG ONNXRUNTIME_BUILD_CONFIG
+
+COPY --from=ort_source . /workspace/onnxruntime
+"""
+    elif FLAGS.ort_version == "1.8.1":
         df += """
 #
 # ONNX Runtime build
@@ -633,6 +647,15 @@ if __name__ == "__main__":
         default=None,
         help="Minimum CUDA compute capability (e.g. 7.5). "
         "Architectures below this value are excluded from the ORT build.",
+    )
+    parser.add_argument(
+        "--ort-local-repo",
+        action="store_true",
+        default=False,
+        help="Use a local ORT clone (via BuildKit named context 'ort_source') instead of "
+        "cloning from GitHub. When set, the docker build command must include "
+        "--build-context ort_source=<path-to-local-ort-clone>. "
+        "Any fixes should be committed directly to the local clone.",
     )
 
     FLAGS = parser.parse_args()
