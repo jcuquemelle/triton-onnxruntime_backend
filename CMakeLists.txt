@@ -87,6 +87,8 @@ project(tritononnxruntimebackend LANGUAGES C CXX)
 #
 option(TRITON_ENABLE_GPU "Enable GPU support in backend" ON)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
+option(TRITON_ENABLE_CUSTOM_LABEL_ENCODER
+  "Build the custom CUDA LabelEncoder op and install alongside the ORT backend" OFF)
 option(TRITON_ENABLE_ONNXRUNTIME_TENSORRT
   "Enable TensorRT execution provider for ONNXRuntime backend in server" OFF)
 option(TRITON_ENABLE_ONNXRUNTIME_OPENVINO
@@ -429,6 +431,69 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD)
     )
   endif() # WIN32
 endif() # TRITON_ONNXRUNTIME_DOCKER_BUILD
+
+#
+# Custom LabelEncoder CUDA op (optional)
+#
+# Built in a separate Docker step using tritonserver_onnxruntime as its base,
+# so ORT build and custom op build are fully independent.  Reuse the ORT image
+# across both by passing --reuse-docker-image onnxruntime to build.py.
+#
+if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
+  if(NOT TRITON_ONNXRUNTIME_DOCKER_BUILD)
+    message(FATAL_ERROR
+      "TRITON_ENABLE_CUSTOM_LABEL_ENCODER requires TRITON_ONNXRUNTIME_DOCKER_BUILD=ON "
+      "(the custom op is compiled inside the ORT Docker image where CUDA is available)")
+  endif()
+
+  set(CUSTOM_LABEL_ENCODER_DOCKER_IMAGE "tritonserver_custom_label_encoder")
+  option(TRITON_CUSTOM_LABEL_ENCODER_SKIP_DOCKER_BUILD
+    "Reuse existing tritonserver_custom_label_encoder image instead of rebuilding" OFF)
+
+  if(TRITON_CUSTOM_LABEL_ENCODER_SKIP_DOCKER_BUILD)
+    add_custom_command(
+      OUTPUT
+        onnxruntime/lib/libcustom_label_encoder.so
+        onnxruntime/lib/liblabel_encoder_trt.so
+      COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
+      COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
+      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
+                        onnxruntime/lib/libcustom_label_encoder.so
+      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/liblabel_encoder_trt.so
+                        onnxruntime/lib/liblabel_encoder_trt.so
+      COMMAND docker rm custom_label_encoder_builder
+      COMMENT "Extracting custom LabelEncoder ops from existing image"
+    )
+  else()
+    add_custom_command(
+      OUTPUT
+        onnxruntime/lib/libcustom_label_encoder.so
+        onnxruntime/lib/liblabel_encoder_trt.so
+      COMMAND docker build --load
+              --build-arg BASE_IMAGE=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+              --build-arg MIN_COMPUTE_CAPABILITY=${TRITON_MIN_COMPUTE_CAPABILITY}
+              -t ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
+              -f ${CMAKE_CURRENT_SOURCE_DIR}/tools/Dockerfile.custom_label_encoder
+              ${CMAKE_CURRENT_SOURCE_DIR}
+      COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
+      COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
+      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
+                        onnxruntime/lib/libcustom_label_encoder.so
+      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/liblabel_encoder_trt.so
+                        onnxruntime/lib/liblabel_encoder_trt.so
+      COMMAND docker rm custom_label_encoder_builder
+      DEPENDS ort_target
+      COMMENT "Building custom LabelEncoder ops (ORT CUDA + TRT plugin)"
+    )
+  endif()
+
+  add_custom_target(custom_label_encoder_target
+    DEPENDS
+      onnxruntime/lib/libcustom_label_encoder.so
+      onnxruntime/lib/liblabel_encoder_trt.so)
+
+  add_dependencies(triton-onnxruntime-backend custom_label_encoder_target)
+endif() # TRITON_ENABLE_CUSTOM_LABEL_ENCODER'
 
 #
 # Install
