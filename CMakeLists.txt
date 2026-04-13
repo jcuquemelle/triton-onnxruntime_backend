@@ -482,28 +482,36 @@ if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
   set(CUSTOM_LABEL_ENCODER_DOCKER_IMAGE "tritonserver_custom_label_encoder")
   option(TRITON_CUSTOM_LABEL_ENCODER_SKIP_DOCKER_BUILD
     "Reuse existing tritonserver_custom_label_encoder image instead of rebuilding" OFF)
+  set(TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE "" CACHE STRING
+    "Docker image used as base for the custom LabelEncoder build. Defaults to tritonserver_onnxruntime. Override when that image has been pruned or was built on another machine.")
+  if(TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE STREQUAL "")
+    set(TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE "${TRITON_ONNXRUNTIME_DOCKER_IMAGE}")
+  endif()
+
+  # Custom label encoder libs are written to a dedicated directory so they never
+  # collide with the onnxruntime/ symlink (which may point into a read-only
+  # artifacts directory when TRITON_ONNXRUNTIME_ARTIFACTS_PATH is set).
+  set(_CUSTOM_LABEL_ENCODER_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/custom_label_encoder_lib")
 
   if(TRITON_CUSTOM_LABEL_ENCODER_SKIP_DOCKER_BUILD)
     add_custom_command(
       OUTPUT
-        onnxruntime/lib/libcustom_label_encoder.so
-        onnxruntime/lib/liblabel_encoder_trt.so
+        ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_CUSTOM_LABEL_ENCODER_LIB_DIR}
       COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
       COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
       COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
-                        onnxruntime/lib/libcustom_label_encoder.so
-      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/liblabel_encoder_trt.so
-                        onnxruntime/lib/liblabel_encoder_trt.so
+                        ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
       COMMAND docker rm custom_label_encoder_builder
       COMMENT "Extracting custom LabelEncoder ops from existing image"
     )
   else()
     add_custom_command(
       OUTPUT
-        onnxruntime/lib/libcustom_label_encoder.so
-        onnxruntime/lib/liblabel_encoder_trt.so
+        ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${_CUSTOM_LABEL_ENCODER_LIB_DIR}
       COMMAND docker build --load
-              --build-arg BASE_IMAGE=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+              --build-arg BASE_IMAGE=${TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE}
               --build-arg MIN_COMPUTE_CAPABILITY=${TRITON_MIN_COMPUTE_CAPABILITY}
               -t ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
               -f ${CMAKE_CURRENT_SOURCE_DIR}/tools/Dockerfile.custom_label_encoder
@@ -511,22 +519,19 @@ if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
       COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
       COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
       COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
-                        onnxruntime/lib/libcustom_label_encoder.so
-      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/liblabel_encoder_trt.so
-                        onnxruntime/lib/liblabel_encoder_trt.so
+                        ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
       COMMAND docker rm custom_label_encoder_builder
       DEPENDS ort_target
-      COMMENT "Building custom LabelEncoder ops (ORT CUDA + TRT plugin)"
+      COMMENT "Building custom LabelEncoder CUDA op from ${TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE}"
     )
   endif()
 
   add_custom_target(custom_label_encoder_target
     DEPENDS
-      onnxruntime/lib/libcustom_label_encoder.so
-      onnxruntime/lib/liblabel_encoder_trt.so)
+      ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so)
 
   add_dependencies(triton-onnxruntime-backend custom_label_encoder_target)
-endif() # TRITON_ENABLE_CUSTOM_LABEL_ENCODER'
+endif() # TRITON_ENABLE_CUSTOM_LABEL_ENCODER
 
 #
 # Install
@@ -591,6 +596,15 @@ if(TRITON_ONNXRUNTIME_DOCKER_BUILD OR DEFINED TRITON_ONNXRUNTIME_PACKAGE_URL)
     )
   endif() # NOT WIN32
 endif() # TRITON_ONNXRUNTIME_DOCKER_BUILD
+
+if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
+  install(
+    DIRECTORY
+      ${CMAKE_CURRENT_BINARY_DIR}/custom_label_encoder_lib/
+    USE_SOURCE_PERMISSIONS
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/backends/onnxruntime
+  )
+endif()
 
 install(
   EXPORT
