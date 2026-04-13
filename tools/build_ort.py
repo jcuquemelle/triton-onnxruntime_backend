@@ -60,6 +60,19 @@ ORT_DOCKER_IMAGE = "tritonserver_onnxruntime"
 DEFAULT_ORT_VERSION = "1.24.4"
 
 
+def default_memory_limit() -> str:
+    """Return 80% of system RAM rounded down to the nearest OS page boundary,
+    expressed as a byte count string suitable for docker --memory."""
+    page_size = os.sysconf("SC_PAGE_SIZE")          # bytes per page (typically 4096)
+    phys_pages = os.sysconf("SC_PHYS_PAGES")        # total physical pages
+    total_bytes = page_size * phys_pages
+    limit_bytes = int(total_bytes * 0.8)
+    # Round down to the nearest page boundary (already a multiple of page_size,
+    # but make the intent explicit).
+    limit_bytes = (limit_bytes // page_size) * page_size
+    return str(limit_bytes)
+
+
 def run(cmd, check=True, **kwargs):
     print(f"+ {' '.join(str(c) for c in cmd)}", flush=True)
     result = subprocess.run(cmd, check=False, **kwargs)
@@ -136,11 +149,20 @@ def main():
         "Architectures below this are excluded from the build.",
     )
     parser.add_argument(
+        "-j",
         "--jobs",
         type=int,
         default=None,
         help="Number of parallel jobs for ORT compilation inside Docker "
         "(passed as PARALLEL_JOBS build-arg).",
+    )
+    parser.add_argument(
+        "--memory",
+        type=str,
+        default=None,
+        help="Memory limit for the docker build (e.g. '16g', '8192m', or a raw byte "
+        "count). Defaults to 80%% of system RAM rounded down to the nearest OS page "
+        "boundary.",
     )
     parser.add_argument(
         "--reuse-image",
@@ -155,6 +177,12 @@ def main():
         default="Release",
         choices=["Debug", "Release", "RelWithDebInfo"],
         help="ORT build configuration (default: Release).",
+    )
+    parser.add_argument(
+        "--cudnn-home",
+        type=str,
+        default="/usr",
+        help="cuDNN installation directory inside the base image (default: /usr).",
     )
 
     FLAGS = parser.parse_args()
@@ -175,6 +203,7 @@ def main():
             f"--ort-version={FLAGS.ort_version}",
             f"--ort-build-config={FLAGS.ort_build_config}",
             "--enable-gpu",
+            f"--cudnn-home={FLAGS.cudnn_home}",
             f"--output={dockerfile_path}",
         ]
         if FLAGS.ort_tensorrt:
@@ -189,10 +218,12 @@ def main():
         run(gen_cmd)
 
         # --- docker build ---
+        memory_limit = FLAGS.memory if FLAGS.memory else default_memory_limit()
         docker_cmd = [
             "docker",
             "build",
             "--load",
+            "--memory", memory_limit,
             "-t",
             ORT_DOCKER_IMAGE,
             "-f",
