@@ -418,9 +418,14 @@ RUN git clone -b rel-${ONNXRUNTIME_VERSION} --recursive ${ONNXRUNTIME_REPO} onnx
             if FLAGS.tensorrt_home is not None:
                 ep_flags += ' --tensorrt_home "{}"'.format(FLAGS.tensorrt_home)
 
-    if os.name == "posix":
-        if os.getuid() == 0:
-            ep_flags += " --allow_running_as_root"
+    # Dockerfile RUN commands always execute as root inside the container (UID 0),
+    # regardless of the host user.  In rootless Docker the container root maps to
+    # the unprivileged host user, but ORT's build.sh still sees UID 0 and refuses
+    # without this flag.  The previous `os.getuid() == 0` guard checked the host
+    # process at Dockerfile-generation time, which only happened to work because
+    # gen_ort_dockerfile.py was previously called from inside the (root) buildbase
+    # container; calling it directly from the host (e.g. via build_ort.py) broke it.
+    ep_flags += " --allow_running_as_root"
 
     if FLAGS.ort_openvino is not None:
         ep_flags += " --use_openvino CPU"

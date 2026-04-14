@@ -323,6 +323,18 @@ if(${TRITON_ENABLE_ONNXRUNTIME_OPENVINO})
   )
 endif() # TRITON_ENABLE_ONNXRUNTIME_OPENVINO
 
+# Rootless Docker: forward DOCKER_HOST to every docker subprocess.
+# CMake custom commands do not reliably inherit shell environment variables
+# when the build is driven by an IDE (e.g. VS Code CMake extension) or a
+# launcher script that resets the environment.  Baking DOCKER_HOST into each
+# COMMAND at configure time mirrors the handling in server/build.py and ensures
+# the correct daemon socket is always used.
+set(_DOCKER_WRAPPER "")
+if(NOT WIN32 AND DEFINED ENV{DOCKER_HOST})
+  set(_DOCKER_WRAPPER ${CMAKE_COMMAND} -E env "DOCKER_HOST=$ENV{DOCKER_HOST}")
+  message(STATUS "Rootless Docker: forwarding DOCKER_HOST=$ENV{DOCKER_HOST} to docker commands")
+endif()
+
 #
 # Build the ONNX Runtime libraries using docker.
 #
@@ -422,11 +434,11 @@ are skipped and this directory is symlinked as the onnxruntime/ tree.")
       add_custom_command(
         OUTPUT
           onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
-        COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
-        COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+        COMMAND ${_DOCKER_WRAPPER} docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
+        COMMAND ${_DOCKER_WRAPPER} docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} /bin/true
         COMMAND rm -fr onnxruntime
-        COMMAND docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
-        COMMAND docker rm onnxruntime_backend_ort
+        COMMAND ${_DOCKER_WRAPPER} docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
+        COMMAND ${_DOCKER_WRAPPER} docker rm onnxruntime_backend_ort
         COMMENT "Reusing existing ORT Docker image '${TRITON_ONNXRUNTIME_DOCKER_IMAGE}'"
       )
     else()
@@ -434,12 +446,12 @@ are skipped and this directory is symlinked as the onnxruntime/ tree.")
         OUTPUT
           onnxruntime/lib/${ONNXRUNTIME_LIBRARY}
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_ort_dockerfile.py  --ort-build-config="${CMAKE_BUILD_TYPE}" --triton-container="${TRITON_BUILD_CONTAINER}" --ort-version="${TRITON_BUILD_ONNXRUNTIME_VERSION}" --trt-version="${TRT_VERSION}" --onnx-tensorrt-tag="${TRITON_ONNX_TENSORRT_REPO_TAG}" ${_GEN_FLAGS} --output=Dockerfile.ort ${ENABLE_GPU_EXTRA_ARGS} ${_ORT_LOCAL_REPO_FLAGS}
-        COMMAND docker build --load ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${_ORT_BUILD_CONTEXT_EXTRA_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMAND docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
-        COMMAND docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE}
+        COMMAND ${_DOCKER_WRAPPER} docker build --load ${_DOCKER_BUILD_PARALLEL_ARG} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE} --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache0 --cache-from=${TRITON_ONNXRUNTIME_DOCKER_IMAGE}_cache1 -t ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} -f ./Dockerfile.ort ${_ORT_BUILD_CONTEXT_EXTRA_ARGS} ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND ${_DOCKER_WRAPPER} docker rm onnxruntime_backend_ort || echo 'error ignored...' || true
+        COMMAND ${_DOCKER_WRAPPER} docker create --name onnxruntime_backend_ort ${TRITON_ONNXRUNTIME_DOCKER_IMAGE} /bin/true
         COMMAND rm -fr onnxruntime
-        COMMAND docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
-        COMMAND docker rm onnxruntime_backend_ort
+        COMMAND ${_DOCKER_WRAPPER} docker cp onnxruntime_backend_ort:/opt/onnxruntime onnxruntime
+        COMMAND ${_DOCKER_WRAPPER} docker rm onnxruntime_backend_ort
         COMMENT "Building ONNX Runtime"
       )
     endif() # TRITON_ONNXRUNTIME_ARTIFACTS_PATH / TRITON_ORT_SKIP_DOCKER_BUILD
@@ -498,11 +510,11 @@ if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
       OUTPUT
         ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_CUSTOM_LABEL_ENCODER_LIB_DIR}
-      COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
-      COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
-      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
+      COMMAND ${_DOCKER_WRAPPER} docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
+      COMMAND ${_DOCKER_WRAPPER} docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE} /bin/true
+      COMMAND ${_DOCKER_WRAPPER} docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
                         ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
-      COMMAND docker rm custom_label_encoder_builder
+      COMMAND ${_DOCKER_WRAPPER} docker rm custom_label_encoder_builder
       COMMENT "Extracting custom LabelEncoder ops from existing image"
     )
   else()
@@ -510,17 +522,17 @@ if(TRITON_ENABLE_CUSTOM_LABEL_ENCODER)
       OUTPUT
         ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_CUSTOM_LABEL_ENCODER_LIB_DIR}
-      COMMAND docker build --load
+      COMMAND ${_DOCKER_WRAPPER} docker build --load
               --build-arg BASE_IMAGE=${TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE}
               --build-arg MIN_COMPUTE_CAPABILITY=${TRITON_MIN_COMPUTE_CAPABILITY}
               -t ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
               -f ${CMAKE_CURRENT_SOURCE_DIR}/tools/Dockerfile.custom_label_encoder
               ${CMAKE_CURRENT_SOURCE_DIR}
-      COMMAND docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
-      COMMAND docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE}
-      COMMAND docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
+      COMMAND ${_DOCKER_WRAPPER} docker rm custom_label_encoder_builder || echo \'error ignored...\' || true
+      COMMAND ${_DOCKER_WRAPPER} docker create --name custom_label_encoder_builder ${CUSTOM_LABEL_ENCODER_DOCKER_IMAGE} /bin/true
+      COMMAND ${_DOCKER_WRAPPER} docker cp custom_label_encoder_builder:/workspace/custom_op_gbeausire_build/libcustom_label_encoder.so
                         ${_CUSTOM_LABEL_ENCODER_LIB_DIR}/libcustom_label_encoder.so
-      COMMAND docker rm custom_label_encoder_builder
+      COMMAND ${_DOCKER_WRAPPER} docker rm custom_label_encoder_builder
       DEPENDS ort_target
       COMMENT "Building custom LabelEncoder CUDA op from ${TRITON_CUSTOM_LABEL_ENCODER_BASE_IMAGE}"
     )

@@ -184,11 +184,37 @@ def main():
         default="/usr",
         help="cuDNN installation directory inside the base image (default: /usr).",
     )
+    parser.add_argument(
+        "--docker-host",
+        type=str,
+        default=None,
+        help="Docker daemon socket to connect to "
+        "(e.g. unix:///run/user/1000/docker.sock). "
+        "Overrides the DOCKER_HOST environment variable. "
+        "Useful for rootless Docker installs where the daemon socket is not at "
+        "the default /var/run/docker.sock.",
+    )
 
     FLAGS = parser.parse_args()
 
     if not FLAGS.reuse_image and FLAGS.base_image is None:
         parser.error("--base-image is required unless --reuse-image is set.")
+
+    # Rootless Docker support: when Docker is installed in rootless mode the
+    # daemon socket lives at a user-specific path and DOCKER_HOST is set to
+    # point there (e.g. unix:///run/user/<uid>/docker.sock).  Mirroring the
+    # handling in server/build.py we read the value from the environment (or
+    # from --docker-host) and forward it explicitly to every docker subprocess
+    # so that the correct daemon is reached regardless of how this script is
+    # invoked (e.g. from a CMake custom command that may not inherit the full
+    # shell environment).
+    docker_host = FLAGS.docker_host or os.environ.get("DOCKER_HOST")
+    if docker_host:
+        print(f"[rootless] Using DOCKER_HOST={docker_host}", flush=True)
+        docker_env = os.environ.copy()
+        docker_env["DOCKER_HOST"] = docker_host
+    else:
+        docker_env = None  # subprocess.run inherits the full environment
 
     build_dir = pathlib.Path(FLAGS.build_dir)
     build_dir.mkdir(parents=True, exist_ok=True)
@@ -237,18 +263,20 @@ def main():
         # Build context is the onnxruntime_backend root (COPY custom_op_gbeausire etc.)
         docker_cmd.append(str(BACKEND_DIR))
 
-        run(docker_cmd)
+        run(docker_cmd, env=docker_env)
 
     # --- Extract artifacts ---
     if FLAGS.artifacts_out:
         artifacts_out = os.path.abspath(FLAGS.artifacts_out)
         print(f"\nExtracting /opt/onnxruntime from {ORT_DOCKER_IMAGE} to {artifacts_out}",
               flush=True)
-        run(["docker", "rm", "-f", "ort_extract_tmp"], check=False)
-        run(["docker", "create", "--name", "ort_extract_tmp", ORT_DOCKER_IMAGE])
+        run(["docker", "rm", "-f", "ort_extract_tmp"], check=False, env=docker_env)
+        # The ORT image has no CMD/ENTRYPOINT; supply a no-op command so that
+        # `docker create` does not fail with "no command specified".
+        run(["docker", "create", "--name", "ort_extract_tmp", ORT_DOCKER_IMAGE, "/bin/true"], env=docker_env)
         pathlib.Path(artifacts_out).parent.mkdir(parents=True, exist_ok=True)
-        run(["docker", "cp", f"ort_extract_tmp:/opt/onnxruntime", artifacts_out])
-        run(["docker", "rm", "ort_extract_tmp"], check=False)
+        run(["docker", "cp", f"ort_extract_tmp:/opt/onnxruntime", artifacts_out], env=docker_env)
+        run(["docker", "rm", "ort_extract_tmp"], check=False, env=docker_env)
         print(f"\nArtifacts extracted to {artifacts_out}", flush=True)
         print(
             f"Pass --ort-artifacts {artifacts_out} to server/build.py to reuse them.",
